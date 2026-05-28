@@ -13,7 +13,13 @@ Volume: ~20 images/day across ~5 analysts.
 
 ## Install (via the Relay-Risk Plugins marketplace)
 
-In Claude Code, run:
+**Step 1** — install Python dependencies (once per machine):
+
+```bash
+pip install c2pa-python mediapipe opencv-python pillow requests mcp
+```
+
+**Step 2** — in Claude Code, add the marketplace and install the plugin:
 
 ```
 /plugin marketplace add mikhaiwilson-prog/relay-risk-plugins

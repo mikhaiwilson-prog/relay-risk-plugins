@@ -1,7 +1,11 @@
 {
   "mcpServers": {
     "ai-verify": {
-      "command": "ai-verify-mcp"
+      "command": "python3",
+      "args": ["-m", "ai_verify.mcp_server"],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/src"
+      }
     }
   }
 }
