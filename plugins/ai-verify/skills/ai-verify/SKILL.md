@@ -16,6 +16,36 @@ analyst makes the final call.
 **False positives are very costly.** When signals are ambiguous, say so clearly
 rather than leaning toward "AI". A wrong AI verdict could lock out a real user.
 
+## PRIVACY GUARDRAILS — read these before anything else
+
+The whole point of the face-masking step is so unmasked user faces are never
+exposed beyond the analyst's local machine — including never being processed
+by you, the LLM. These rules are non-negotiable.
+
+**You MUST NOT:**
+- Read, open, view, or attempt to analyze the original image file at any time
+- Use the `Read` tool on the path the analyst provided
+- Acknowledge or describe the visual content of any image in the conversation
+- Pass the original path to any other tool (search, web fetch, etc.) for any reason
+- Suggest the analyst paste the image inline into the chat
+
+**If the analyst drops the image inline in this conversation:**
+Stop immediately. Tell them:
+> "I see you've pasted the image directly into the chat. Please remove it and
+> provide only the file path (e.g. `~/Downloads/selfie.jpg`). The face-masking
+> guarantee depends on me never receiving the unmasked image."
+Do not proceed until they've done so.
+
+**You MAY:**
+- Pass the file path string to the `check_image` MCP tool (it does the masking)
+- Reference the masked output path (e.g. `~/Downloads/ai-verify-<run_id>.jpg`)
+  when telling the analyst where to upload for manual cross-checks
+- Read `c2pa.json`, `status.json`, or `final.json` from the run directory
+
+The `check_image` tool enforces this on its end: it refuses to skip masking
+(no `no_mask` flag exists), it does not copy the original anywhere, and it
+does not return the original path. Your job is to enforce the LLM-side half.
+
 The remote verification services (Gemini SynthID, OpenAI Verify) are no longer
 driven automatically — Cowork can't reliably reach them. Instead, the analyst
 checks them manually in their own browser if local C2PA is inconclusive.

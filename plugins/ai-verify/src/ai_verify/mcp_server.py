@@ -35,47 +35,50 @@ def _run_dir(run_id: str, out_dir: str | None) -> Path:
 def check_image(
     image_path: str,
     out_dir: str | None = None,
-    no_mask: bool = False,
 ) -> dict[str, Any]:
     """
     Run the local AI-image verification pipeline.
 
-    Performs C2PA manifest inspection and face masking. Drops a masked copy
-    in ~/Downloads/ai-verify-<run_id>.jpg so the analyst can easily upload
-    it to Gemini SynthID or OpenAI Verify for an optional manual cross-check.
+    PRIVACY GUARDRAILS:
+    - Face masking is mandatory. There is no flag to skip it.
+    - The unmasked image is NEVER copied into the run directory.
+    - The unmasked image path is NEVER surfaced in the return value.
+    - If face detection fails, no image artifact is produced (no masked copy,
+      no Downloads copy, no manual-check URLs). The analyst is told to verify
+      the image is a selfie.
 
-    Returns run_id, C2PA result, mask result, and artifact paths.
+    On success returns: run_id, C2PA result, mask result, downloads_path,
+    manual_check_urls, and artifact paths for the MASKED image only.
     """
     path = Path(image_path)
     run_id = _make_run_id()
     run_dir = _run_dir(run_id, out_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    original_copy = run_dir / f"original{path.suffix}"
-    shutil.copy2(path, original_copy)
+    # Face masking runs first. The pipeline refuses to produce any image
+    # artifact (masked copy, Downloads copy, upload-URL guidance) unless
+    # masking succeeds. The unmasked original is never copied or exposed.
+    masked_path = run_dir / "masked.jpg"
+    mask_result: dict[str, Any] | None = None
+    mask_error: str | None = None
+    try:
+        mask_result = mask_faces(path, masked_path)
+    except FaceDetectionFailedError as exc:
+        mask_error = str(exc)
+    except Exception as exc:
+        mask_error = f"Masking failed: {exc}"
 
+    downloads_copy: Path | None = None
+    if mask_result and _DOWNLOADS_DIR.exists():
+        downloads_copy = _DOWNLOADS_DIR / f"ai-verify-{run_id}.jpg"
+        shutil.copy2(masked_path, downloads_copy)
+
+    # C2PA reads metadata only — does not surface pixel data to the LLM.
     c2pa_result = check_c2pa(path)
     c2pa_result["run_id"] = run_id
     (run_dir / "c2pa.json").write_text(json.dumps(c2pa_result, indent=2))
 
-    masked_path = run_dir / "masked.jpg"
-    downloads_copy: Path | None = None
-    mask_result: dict[str, Any] | None = None
-    mask_error: str | None = None
-
-    if not no_mask:
-        try:
-            mask_result = mask_faces(path, masked_path)
-        except FaceDetectionFailedError as exc:
-            mask_error = str(exc)
-        except Exception as exc:
-            mask_error = f"Masking failed: {exc}"
-
-    if masked_path.exists() and _DOWNLOADS_DIR.exists():
-        downloads_copy = _DOWNLOADS_DIR / f"ai-verify-{run_id}.jpg"
-        shutil.copy2(masked_path, downloads_copy)
-
-    status = {
+    status: dict[str, Any] = {
         "run_id": run_id,
         "image": path.name,
         "run_dir": str(run_dir),
@@ -83,15 +86,21 @@ def check_image(
         "mask": mask_result,
         "mask_error": mask_error,
         "downloads_path": str(downloads_copy) if downloads_copy else None,
-        "manual_check_urls": {
-            "gemini": "https://gemini.google.com",
-            "openai_verify": "https://openai.com/research/verify",
-        },
+        # Manual-check URLs are only surfaced when there's a masked image
+        # available — never direct the analyst to upload an unmasked image.
+        "manual_check_urls": (
+            {
+                "gemini": "https://gemini.google.com",
+                "openai_verify": "https://openai.com/research/verify",
+            }
+            if mask_result
+            else None
+        ),
         "artifacts": {
-            "original": str(original_copy),
-            "masked": str(masked_path) if masked_path.exists() else None,
+            "masked": str(masked_path) if mask_result else None,
             "c2pa_json": str(run_dir / "c2pa.json"),
             "downloads_copy": str(downloads_copy) if downloads_copy else None,
+            # NOTE: 'original' is intentionally NOT included — privacy guardrail.
         },
     }
     (run_dir / "status.json").write_text(json.dumps(status, indent=2))
