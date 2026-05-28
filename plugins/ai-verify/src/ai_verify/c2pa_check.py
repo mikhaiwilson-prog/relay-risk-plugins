@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ai_verify.config import AI_GENERATOR_KEYWORDS
+from ai_verify.config import (
+    AI_DIGITAL_SOURCE_TYPES,
+    AI_GENERATOR_KEYWORDS,
+    AI_SIGNATURE_ISSUERS,
+)
 
 _EMPTY: dict[str, Any] = {
     "has_c2pa": False,
@@ -19,10 +23,47 @@ _EMPTY: dict[str, Any] = {
     "error": None,
 }
 
-_AI_DST_SUBSTRINGS = (
-    "trainedAlgorithmicMedia",
-    "compositeWithTrainedAlgorithmicMedia",
-)
+
+def _action_dst(action: dict[str, Any]) -> str:
+    """Read digitalSourceType from the action, with parameters fallback.
+
+    Per C2PA 2.2 spec, digitalSourceType lives on the action object.
+    Some producers (Photoshop generative fill, Firefly variations) place
+    it inside action.parameters instead. Check both.
+    """
+    dst = action.get("digitalSourceType")
+    if dst:
+        return str(dst)
+    params = action.get("parameters") or {}
+    return str(params.get("digitalSourceType") or "")
+
+
+def _action_software_agent(action: dict[str, Any]) -> str | None:
+    """Read softwareAgent name; tolerates string and {name,...} dict forms."""
+    sw = action.get("softwareAgent")
+    if sw is None:
+        params = action.get("parameters") or {}
+        sw = params.get("softwareAgent")
+    if isinstance(sw, dict):
+        return sw.get("name")
+    if isinstance(sw, str):
+        return sw
+    return None
+
+
+def _is_ai_dst(dst: str) -> bool:
+    """Case-insensitive check against the AI digitalSourceType vocabulary."""
+    if not dst:
+        return False
+    dst_lower = dst.lower()
+    return any(sub.lower() in dst_lower for sub in AI_DIGITAL_SOURCE_TYPES)
+
+
+def _matches_ai_issuer(issuer: str | None) -> bool:
+    if not issuer:
+        return False
+    issuer_lower = issuer.lower()
+    return any(kw in issuer_lower for kw in AI_SIGNATURE_ISSUERS)
 
 
 def check_c2pa(image_path: Path) -> dict[str, Any]:
@@ -82,25 +123,33 @@ def check_c2pa(image_path: Path) -> dict[str, Any]:
     ai_source_type: str | None = None
     ai_software_agent: str | None = None
 
+    # Per C2PA 2.2, action assertions can be labelled `c2pa.actions` or
+    # `c2pa.actions.v2` (and future v3+). Match by prefix.
     for assertion in manifest.get("assertions", []):
         label: str = assertion.get("label", "")
         data: dict[str, Any] = assertion.get("data", {})
 
-        if label == "c2pa.actions":
+        if label.startswith("c2pa.actions"):
             for action in data.get("actions", []):
-                dst: str = action.get("digitalSourceType", "")
-                if any(sub in dst for sub in _AI_DST_SUBSTRINGS):
+                dst = _action_dst(action)
+                if _is_ai_dst(dst):
                     has_ai_assertion = True
                     ai_source_type = dst
-                    sw = action.get("softwareAgent", {})
-                    ai_software_agent = sw.get("name") if isinstance(sw, dict) else sw
+                    ai_software_agent = _action_software_agent(action)
                     break
+            if has_ai_assertion:
+                break
 
-    # Fallback: check claim generator name against known AI tool keywords
+    # Fallback 1: claim generator name keyword match (case-insensitive)
     if not has_ai_assertion and claim_generator_name:
         name_lower = claim_generator_name.lower()
         if any(kw in name_lower for kw in AI_GENERATOR_KEYWORDS):
             has_ai_assertion = True
+
+    # Fallback 2: signature issuer matches a known AI signer
+    # (low false-positive risk — these issuers sign their generative output)
+    if not has_ai_assertion and _matches_ai_issuer(signature_issuer):
+        has_ai_assertion = True
 
     return {
         "has_c2pa": True,

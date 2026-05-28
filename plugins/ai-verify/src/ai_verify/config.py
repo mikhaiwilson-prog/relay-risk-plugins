@@ -22,6 +22,37 @@ AI_GENERATOR_KEYWORDS: list[str] = [
     "runway",
     "pika",
     "sora",
+    "media service",  # OpenAI Media Service API
+    "designer",  # Microsoft Designer / Image Creator
+    "aurora",  # xAI Aurora
+    "recraft",
+    "nightcafe",
+    "freepik",
+    "magnific",
+]
+
+# IPTC digitalSourceType vocabulary values that indicate AI generation.
+# Source: https://cv.iptc.org/newscodes/digitalsourcetype/
+# We match by case-insensitive substring of the digitalSourceType IRI.
+# Excludes "algorithmicMedia" (rule-based, not trained) and
+# "algorithmicallyEnhanced" (debatable, would inflate false positives).
+AI_DIGITAL_SOURCE_TYPES: list[str] = [
+    "trainedAlgorithmicMedia",
+    "compositeWithTrainedAlgorithmicMedia",
+    "compositeSynthetic",
+    "virtualRecording",
+]
+
+# Signature issuers known to sign C2PA manifests on AI-generated content.
+# Match is case-insensitive substring. Used as a fallback signal AFTER
+# assertion + keyword checks fail.
+AI_SIGNATURE_ISSUERS: list[str] = [
+    "openai opco",
+    "adobe inc",
+    "google llc",
+    "stability ai",
+    "black forest labs",
+    "midjourney",
 ]
 
 FACE_DETECTION_CONFIDENCE: float = 0.5

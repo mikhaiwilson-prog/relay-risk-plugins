@@ -175,3 +175,157 @@ def test_empty_active_manifest_label_is_error(plain_jpeg: Path) -> None:
         result = check_c2pa(plain_jpeg)
     assert result["error"] is not None
     assert "Malformed" in result["error"] or "empty" in result["error"].lower()
+
+
+# ── Regression tests for the lala.png false negative ─────────────────────
+
+def _ai_actions_manifest(label: str, dst: str, sw_name: str = "gpt-image") -> dict:
+    """Build a manifest with the given actions label + digitalSourceType."""
+    return {
+        "active_manifest": "urn:test:m1",
+        "manifests": {
+            "urn:test:m1": {
+                "validation_status": [],
+                "claim_generator_info": [{"name": "Generic Camera"}],
+                "signature_info": {"issuer": "Some CA"},
+                "assertions": [
+                    {
+                        "label": label,
+                        "data": {
+                            "actions": [
+                                {
+                                    "action": "c2pa.created",
+                                    "digitalSourceType": dst,
+                                    "softwareAgent": {"name": sw_name},
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        },
+    }
+
+
+def test_c2pa_actions_v2_label_detected(plain_jpeg: Path) -> None:
+    """Regression: lala.png used label `c2pa.actions.v2`, not `c2pa.actions`."""
+    manifest = _ai_actions_manifest(
+        "c2pa.actions.v2",
+        "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia",
+    )
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
+    assert result["ai_source_type"] == (
+        "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+    )
+    assert result["ai_software_agent"] == "gpt-image"
+
+
+def test_future_c2pa_actions_v3_label_detected(plain_jpeg: Path) -> None:
+    """Prefix match: future v3+ labels should still work."""
+    manifest = _ai_actions_manifest(
+        "c2pa.actions.v3",
+        "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia",
+    )
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
+
+
+def test_digital_source_type_in_parameters_detected(plain_jpeg: Path) -> None:
+    """Photoshop/Firefly nest digitalSourceType under action.parameters."""
+    manifest = {
+        "active_manifest": "urn:test:m1",
+        "manifests": {
+            "urn:test:m1": {
+                "validation_status": [],
+                "claim_generator_info": [{"name": "Adobe Photoshop"}],
+                "signature_info": {},
+                "assertions": [
+                    {
+                        "label": "c2pa.actions.v2",
+                        "data": {
+                            "actions": [
+                                {
+                                    "action": "c2pa.created",
+                                    "parameters": {
+                                        "digitalSourceType": (
+                                            "http://cv.iptc.org/newscodes/"
+                                            "digitalsourcetype/"
+                                            "compositeWithTrainedAlgorithmicMedia"
+                                        ),
+                                        "softwareAgent": "Firefly",
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        },
+    }
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
+    assert result["ai_software_agent"] == "Firefly"
+
+
+def test_composite_synthetic_iptc_value_detected(plain_jpeg: Path) -> None:
+    manifest = _ai_actions_manifest(
+        "c2pa.actions.v2",
+        "http://cv.iptc.org/newscodes/digitalsourcetype/compositeSynthetic",
+    )
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
+
+
+def test_signature_issuer_fallback_openai(plain_jpeg: Path) -> None:
+    """If assertions and generator name both miss, OpenAI issuer alone flips it."""
+    manifest = {
+        "active_manifest": "urn:test:m1",
+        "manifests": {
+            "urn:test:m1": {
+                "validation_status": [],
+                "claim_generator_info": [{"name": "Some Anonymous Generator"}],
+                "signature_info": {"issuer": "OpenAI OpCo, LLC"},
+                "assertions": [],
+            }
+        },
+    }
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
+    assert result["signature_issuer"] == "OpenAI OpCo, LLC"
+
+
+def test_signature_issuer_unknown_does_not_flip(plain_jpeg: Path) -> None:
+    """Unknown issuer + no other AI signal → no false positive."""
+    manifest = {
+        "active_manifest": "urn:test:m1",
+        "manifests": {
+            "urn:test:m1": {
+                "validation_status": [],
+                "claim_generator_info": [{"name": "Nikon Camera"}],
+                "signature_info": {"issuer": "Nikon Corp."},
+                "assertions": [
+                    {"label": "c2pa.actions.v2", "data": {"actions": [{"action": "c2pa.created"}]}}
+                ],
+            }
+        },
+    }
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is False
+
+
+def test_lowercase_dst_substring_match(plain_jpeg: Path) -> None:
+    """A producer that lowercases or stylizes the DST URL should still match."""
+    manifest = _ai_actions_manifest(
+        "c2pa.actions.v2",
+        "http://example.com/synthetic/TRAINEDALGORITHMICMEDIA",
+    )
+    with _patch_try_create(manifest):
+        result = check_c2pa(plain_jpeg)
+    assert result["has_ai_assertion"] is True
