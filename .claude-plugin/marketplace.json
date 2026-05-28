@@ -10,10 +10,7 @@
       "name": "ai-verify",
       "description": "Assistive AI-image verification pipeline: local C2PA + face masking, then Cowork hand-off to Gemini SynthID and OpenAI Verify.",
       "version": "0.1.0",
-      "source": {
-        "source": "github",
-        "repo": "mikhaiwilson-prog/ai-verify"
-      },
+      "source": "./plugins/ai-verify",
       "category": "security",
       "tags": ["ai-detection", "c2pa", "synthid", "selfie"]
     }

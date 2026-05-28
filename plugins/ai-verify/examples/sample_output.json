@@ -1,0 +1,45 @@
+{
+  "run_id": "20260528-143022-a1b2c3",
+  "overall_verdict": "ai_confirmed",
+  "confidence": "high",
+  "signals": {
+    "c2pa_local": "ai_assertion",
+    "gemini": "ai_google",
+    "openai": "ai_detected"
+  },
+  "reasoning": "Local C2PA manifest contains a valid AI assertion.",
+  "raw": {
+    "local": {
+      "run_id": "20260528-143022-a1b2c3",
+      "has_c2pa": true,
+      "c2pa_valid": true,
+      "validation_state": "valid",
+      "claim_generator_name": "DALL-E 3",
+      "signature_issuer": "C2PA Test Signing Cert",
+      "has_ai_assertion": true,
+      "ai_source_type": "trainedAlgorithmicMedia",
+      "ai_software_agent": "DALL-E 3",
+      "raw_manifest": {},
+      "error": null
+    },
+    "agent": {
+      "run_id": "20260528-143022-a1b2c3",
+      "image": "selfie.jpg",
+      "timestamp": "2026-05-28T14:30:45Z",
+      "gemini": {
+        "verdict": "ai_google",
+        "raw_response": "SynthID watermark detected. This image was created by Google AI.",
+        "screenshot_taken": true
+      },
+      "openai": {
+        "verdict": "ai_detected",
+        "c2pa_found": true,
+        "synthid_found": false,
+        "generator_info": "DALL-E 3",
+        "raw_response": "Content credentials found. Generator: DALL-E 3.",
+        "screenshot_taken": true
+      },
+      "summary": "Both Gemini SynthID and OpenAI Verify flagged this image as AI-generated."
+    }
+  }
+}

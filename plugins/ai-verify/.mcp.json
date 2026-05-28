@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "ai-verify": {
+      "command": "ai-verify-mcp"
+    }
+  }
+}

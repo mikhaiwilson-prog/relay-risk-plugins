@@ -1,0 +1,10 @@
+{
+  "name": "ai-verify",
+  "version": "0.1.0",
+  "description": "Assistive AI-image verification pipeline for trust-and-safety analysts. Combines local C2PA inspection, face masking, and a Cowork hand-off to Gemini SynthID + OpenAI Verify.",
+  "author": {
+    "name": "Relay Risk Team",
+    "email": "risk@relayfi.com"
+  },
+  "keywords": ["risk", "trust-and-safety", "ai-detection", "c2pa", "synthid"]
+}
