@@ -4,12 +4,12 @@ A Claude Code plugin that helps Relay trust-and-safety analysts decide whether
 a submitted selfie is AI-generated. This is an assistive tool — it surfaces
 signals; the analyst makes the final call.
 
-The pipeline does the privacy-sensitive work locally (C2PA inspection + face
-masking), then hands a paste-ready prompt to **Claude Desktop's Cowork mode**
-for the browser-driven Gemini SynthID and OpenAI Verify checks.
+The pipeline does all the work locally (C2PA inspection + face masking) and
+gives the analyst a verdict card. If the local check is inconclusive, the
+card points the analyst at two manual cross-check URLs they can hit in their
+own browser.
 
-Volume: ~20 images/day across ~5 analysts, each using their own personal
-Google and OpenAI accounts.
+Volume: ~20 images/day across ~5 analysts.
 
 ## Install (via the Relay-Risk Plugins marketplace)
 
@@ -22,7 +22,7 @@ In Claude Code, run:
 
 Restart Claude Code. The plugin contributes:
 - `/ai-verify <image-path>` — slash command
-- An `ai-verify` skill that orchestrates the pipeline
+- An `ai-verify` skill that runs the pipeline and presents the verdict
 - An `ai-verify` MCP server exposing `check_image`, `merge_run`, `show_run`
 
 The first time face masking runs, the tool downloads a ~230 KB BlazeFace
@@ -31,15 +31,23 @@ tflite model to `~/.ai-verify/models/`. Override the path with the
 
 ## How it works
 
-1. **Local C2PA check** — inspects the image's Content Credentials manifest for
-   AI generation assertions. Deterministic and offline.
-2. **Face masking** — uses MediaPipe to detect and mask all faces before any
-   image leaves your machine.
-3. **Cowork hand-off** — Claude Code prints a paste-ready prompt. You switch to
-   Claude Desktop's Cowork mode, paste the prompt, and Cowork runs Gemini
-   SynthID and OpenAI Verify in tabs you're signed into.
-4. **Result merging** — paste the agent's returned JSON back into Claude Code;
-   the plugin merges it with the local C2PA finding into a conservative verdict.
+1. **Local C2PA check** — inspects the image's Content Credentials manifest
+   for AI generation assertions. Deterministic, offline. This is the strongest
+   signal we have for AI images that haven't had their metadata stripped.
+2. **Face masking** — uses MediaPipe to detect and mask all faces. A masked
+   copy lands at `~/Downloads/ai-verify-<run_id>.jpg` for easy upload to
+   remote services if needed.
+3. **Verdict card** — the skill summarizes the C2PA result and either:
+   - Confirms AI (when C2PA says so),
+   - Confirms clean provenance (when C2PA is signed and AI-free), or
+   - Tells the analyst the local check is inconclusive and points them at
+     the two manual cross-check URLs.
+4. **Optional manual cross-check** — if the analyst chooses to verify at
+   Gemini SynthID and/or OpenAI Verify, they paste the findings back as
+   JSON and run `merge_run` to record a combined verdict.
+
+No browser automation. The analyst handles the (rare) remote check in their
+own signed-in browser, on their own time.
 
 ## Quickstart
 
@@ -51,9 +59,14 @@ In Claude Code:
 
 The plugin will:
 1. Run `check_image` locally (C2PA + face mask)
-2. Print a prompt for you to paste into Claude Desktop → Cowork
-3. After you return with the agent JSON, run `merge_run`
-4. Show you the final verdict
+2. Print a verdict card with the result
+3. If inconclusive, point you at the two manual-check URLs
+
+If you do a manual remote check and want to record it:
+
+```
+merge_run(run_id="<run_id>", agent_json_path="<path-to-findings.json>")
+```
 
 ### Manual / scripted use
 
@@ -61,12 +74,14 @@ The plugin will:
 from ai_verify.mcp_server import check_image, merge_run
 
 status = check_image(image_path="./selfie.jpg")
-run_id = status["run_id"]
 
-# Paste prompt.txt into Cowork, save agent JSON to agent_result.json
-
-final = merge_run(run_id=run_id, agent_json_path="./agent_result.json")
-print(final["overall_verdict"], final["reasoning"])
+if status["c2pa"]["has_ai_assertion"]:
+    print("AI confirmed via C2PA")
+else:
+    print("Local check inconclusive; check manually at:")
+    print(status["manual_check_urls"])
+    # ...later, after manual check:
+    # final = merge_run(run_id=status["run_id"], agent_json_path="...")
 ```
 
 ## Verdict reference
@@ -86,26 +101,24 @@ Set `AI_VERIFY_SLACK_WEBHOOK` to a Slack incoming webhook URL and pass
 
 ## Limitations
 
-**What this catches:**
-- AI images that retain intact C2PA Content Credentials with an AI assertion
-- Images flagged by Gemini SynthID (Google AI-generated content)
-- Images flagged by OpenAI's Verify tool (DALL-E and other OpenAI generators)
+**What this catches reliably (local C2PA):**
+- ChatGPT / DALL-E images (OpenAI signs C2PA into all generated images)
+- Adobe Firefly images (Adobe signs C2PA)
+- Other generators that ship intact C2PA Content Credentials
 
-**What this misses:**
-- AI images whose C2PA metadata was stripped (most laundered or re-uploaded images)
-- AI generators that don't embed C2PA and aren't covered by Gemini/OpenAI watermarks
-- Images from older or niche AI models with no watermark support
-- Images that have been heavily re-edited after generation
+**What this misses (and the manual cross-check helps with):**
+- AI images whose C2PA was stripped (re-uploaded, re-encoded, re-edited)
+- Google AI images with SynthID but no C2PA (Gemini SynthID covers this)
+- Generators that don't embed any provenance at all
 
-**This tool does not replace human judgment.** It surfaces signals for analysts
-who make the final call.
+**This tool does not replace human judgment.** It surfaces signals for
+analysts who make the final call.
 
 ## Terms of service note
 
-Each analyst uses their own personal Google and OpenAI accounts for the Cowork
-browser checks. This tool is for low-volume internal review only
-(~20 images/day total). Review Google's and OpenAI's ToS before use; do not use
-organizational or API accounts unless explicitly permitted.
+When the local check is inconclusive and an analyst chooses to cross-check
+remotely, they do so in their own browser using their own personal Google /
+OpenAI account. This plugin does not automate access to those services.
 
 ## Development
 
@@ -115,15 +128,7 @@ Working on the plugin directly (no marketplace install):
 git clone <repo>
 cd ai-verify
 pip install -e ".[dev]"
-pytest                       # 45 tests
+pytest                       # ~40 tests
 ruff check src tests
 mypy src
-```
-
-To exercise the plugin locally in Claude Code, register the repo as a local
-marketplace:
-
-```
-/plugin marketplace add /absolute/path/to/relay-risk-plugins
-/plugin install ai-verify@relay-risk-plugins
 ```

@@ -1,9 +1,9 @@
 ---
 name: ai-verify
 description: >
-  Runs the full AI image verification pipeline for trust-and-safety analysts.
-  Use when an analyst wants to check whether a submitted selfie is AI-generated.
-  Triggers on: "check this image for AI", "verify this selfie",
+  Runs local AI-image verification (C2PA + face masking) for trust-and-safety
+  analysts. Use when an analyst wants to check whether a submitted selfie is
+  AI-generated. Triggers on: "check this image for AI", "verify this selfie",
   "is this AI-generated", "/ai-verify <path>".
 ---
 
@@ -16,9 +16,9 @@ analyst makes the final call.
 **False positives are very costly.** When signals are ambiguous, say so clearly
 rather than leaning toward "AI". A wrong AI verdict could lock out a real user.
 
-The browser checks happen in the analyst's Claude Desktop app under Cowork mode,
-not here in Claude Code. This skill orchestrates the local pipeline and the
-hand-off across both surfaces.
+The remote verification services (Gemini SynthID, OpenAI Verify) are no longer
+driven automatically — Cowork can't reliably reach them. Instead, the analyst
+checks them manually in their own browser if local C2PA is inconclusive.
 
 ## Step 1 — Run the local pipeline
 
@@ -28,46 +28,81 @@ Call the `check_image` MCP tool:
 check_image(image_path="<path the analyst provided>")
 ```
 
-Report back:
-- C2PA result (has manifest? AI assertion found?)
-- Whether face masking succeeded (if not, explain why and stop — never proceed
-  to remote checks with an unmasked face)
-- The `run_id` (analyst needs this for Step 3)
-- The `prompt_path` (analyst needs this for Step 2)
+This performs C2PA manifest inspection (offline, deterministic) and face
+masking with MediaPipe. A masked copy is dropped at
+`~/Downloads/ai-verify-<run_id>.jpg` so the analyst can easily upload it later.
 
-If face masking failed with `FaceDetectionFailedError`, tell the analyst:
-"No face was detected in this image. The tool requires a clear face to mask
-before sending to remote services. Please verify the image is a selfie."
+If face masking fails with `FaceDetectionFailedError`, tell the analyst:
+"No face was detected. The tool requires a clear face to mask before any
+manual remote check. Verify the image is a selfie."
 
-## Step 2 — Hand off to Cowork
+## Step 2 — Present the verdict card
 
-Tell the analyst:
+Based on the C2PA result, give the analyst ONE of three responses.
 
-> "Local checks complete. To run the Gemini SynthID and OpenAI Verify checks,
-> open the Claude Desktop app, switch to Cowork, and paste the contents of:
+### Branch A: C2PA found an AI assertion (`has_ai_assertion=True`)
+
+> 🤖 **AI confirmed by C2PA provenance**
+> - Generator: `<claim_generator_name>`
+> - Source type: `<ai_source_type>`
+> - Signed by: `<signature_issuer>`
+> - Run ID: `<run_id>`
 >
-> `<prompt_path from check_image result>`
+> High confidence. No manual remote check needed — OpenAI Verify reads
+> the same C2PA chunk we just parsed.
+
+### Branch B: C2PA found valid provenance with NO AI assertion
+
+> ✅ **Local C2PA is clean — no AI signal**
+> - Signed by: `<signature_issuer>`
+> - Run ID: `<run_id>`
 >
-> Make sure your Cowork tab group has gemini.google.com and openai.com/index/verify
-> available (or let Cowork open them). Drag the masked image at `<masked path>`
-> into the tab group so Cowork can upload it. When Cowork returns the JSON result,
-> save it locally and come back with the path (or paste the JSON inline)."
+> Strong evidence this is not AI. For an additional cross-check, upload the
+> masked image at `~/Downloads/ai-verify-<run_id>.jpg` to either:
+> - https://gemini.google.com — ask: "use SynthID verification on this image"
+> - https://openai.com/research/verify
+>
+> If both come back clean, you're done. If either flags AI, run `merge_run`
+> with the findings to record the final verdict.
 
-Display the prompt content inline so the analyst can copy it easily.
+### Branch C: No C2PA manifest (`has_c2pa=False`)
 
-## Step 3 — Merge results
+> ⏸️ **C2PA absent — local check inconclusive**
+> - Run ID: `<run_id>`
+>
+> The image has no Content Credentials. This is normal for many cameras and
+> for downstream-edited images, so absence is **not evidence of AI**.
+> Recommend a manual remote check using the masked image at
+> `~/Downloads/ai-verify-<run_id>.jpg`:
+> - https://gemini.google.com — ask: "use SynthID verification on this image"
+> - https://openai.com/research/verify
+>
+> Come back with what they showed and run `merge_run` if you want to record
+> the verdict.
 
-When the analyst returns with the agent JSON (as a file path or pasted inline):
+## Step 3 — Optional: record manual findings
 
-If pasted inline: write it to `<run_dir>/agent_result.json` first, then call:
+If the analyst returns with findings from Gemini and/or OpenAI Verify, write
+them to a JSON file (or build it inline):
+
+```json
+{
+  "run_id": "<run_id>",
+  "image": "<original filename>",
+  "gemini": {"verdict": "ai_google" | "no_google_ai" | "...", "raw_response": "..."},
+  "openai": {"verdict": "ai_detected" | "no_signal" | "...", "raw_response": "..."}
+}
+```
+
+Then call:
 
 ```
-merge_run(run_id="<run_id>", agent_json_path="<path to agent JSON>")
+merge_run(run_id="<run_id>", agent_json_path="<path>")
 ```
 
-## Step 4 — Present the final verdict
+This combines local + manual findings into a final verdict.
 
-Format the verdict clearly:
+## Verdict reference
 
 | Verdict | Emoji | Meaning |
 |---|---|---|
@@ -77,16 +112,12 @@ Format the verdict clearly:
 | `needs_manual_review` | ❓ | Mixed signals — additional context needed |
 | `incomplete` | ⏸️ | A service was unavailable — re-run recommended |
 
-Always include:
-- The `reasoning` field verbatim
-- Which signals fired (`signals.c2pa_local`, `signals.gemini`, `signals.openai`)
-- The `run_id` so the analyst can reference it in their notes
-- Confidence level
+Always show the `reasoning` field verbatim when presenting a `merge_run` verdict.
 
 ## Rules
 
 - Never make an AI determination without running at least the local C2PA check.
-- Never send an unmasked image to remote services — `check_image` enforces this,
-  but remind the analyst if they try to skip masking with `no_mask=True`.
-- If both remote services are unavailable, return `incomplete` — do not guess.
-- Always show the analyst the raw `reasoning` from `merge_run`.
+- Never send an unmasked image to remote services — `check_image` enforces this.
+  Remind the analyst if they try to skip masking with `no_mask=True`.
+- C2PA absence is **not** evidence of AI. Most legitimate photos lack C2PA too.
+- Always show the reasoning behind your verdict.

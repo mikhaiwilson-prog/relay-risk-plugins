@@ -14,8 +14,9 @@ from ai_verify.c2pa_check import check_c2pa
 from ai_verify.config import DEFAULT_OUT_DIR
 from ai_verify.face_mask import FaceDetectionFailedError, mask_faces
 from ai_verify.notify import notify_slack
-from ai_verify.prompt_builder import build_prompt
 from ai_verify.result_merger import merge_results
+
+_DOWNLOADS_DIR = Path.home() / "Downloads"
 
 mcp = FastMCP("ai-verify")
 
@@ -37,10 +38,13 @@ def check_image(
     no_mask: bool = False,
 ) -> dict[str, Any]:
     """
-    Run the full local pipeline on a selfie image.
+    Run the local AI-image verification pipeline.
 
-    Performs C2PA verification, face masking, and prompt generation.
-    Returns run_id and artifact paths. Prints the paste-ready prompt to stdout.
+    Performs C2PA manifest inspection and face masking. Drops a masked copy
+    in ~/Downloads/ai-verify-<run_id>.jpg so the analyst can easily upload
+    it to Gemini SynthID or OpenAI Verify for an optional manual cross-check.
+
+    Returns run_id, C2PA result, mask result, and artifact paths.
     """
     path = Path(image_path)
     run_id = _make_run_id()
@@ -55,6 +59,7 @@ def check_image(
     (run_dir / "c2pa.json").write_text(json.dumps(c2pa_result, indent=2))
 
     masked_path = run_dir / "masked.jpg"
+    downloads_copy: Path | None = None
     mask_result: dict[str, Any] | None = None
     mask_error: str | None = None
 
@@ -66,9 +71,9 @@ def check_image(
         except Exception as exc:
             mask_error = f"Masking failed: {exc}"
 
-    prompt_path: Path | None = None
-    if masked_path.exists():
-        prompt_path = build_prompt(masked_path, path.name, run_id, run_dir)
+    if masked_path.exists() and _DOWNLOADS_DIR.exists():
+        downloads_copy = _DOWNLOADS_DIR / f"ai-verify-{run_id}.jpg"
+        shutil.copy2(masked_path, downloads_copy)
 
     status = {
         "run_id": run_id,
@@ -77,22 +82,19 @@ def check_image(
         "c2pa": c2pa_result,
         "mask": mask_result,
         "mask_error": mask_error,
-        "prompt_path": str(prompt_path) if prompt_path else None,
+        "downloads_path": str(downloads_copy) if downloads_copy else None,
+        "manual_check_urls": {
+            "gemini": "https://gemini.google.com",
+            "openai_verify": "https://openai.com/research/verify",
+        },
         "artifacts": {
             "original": str(original_copy),
             "masked": str(masked_path) if masked_path.exists() else None,
             "c2pa_json": str(run_dir / "c2pa.json"),
-            "prompt_txt": str(prompt_path) if prompt_path else None,
+            "downloads_copy": str(downloads_copy) if downloads_copy else None,
         },
     }
     (run_dir / "status.json").write_text(json.dumps(status, indent=2))
-
-    if prompt_path and prompt_path.exists():
-        print("\n" + "=" * 60)
-        print("PASTE THIS INTO CLAUDE IN CHROME:")
-        print("=" * 60)
-        print(prompt_path.read_text())
-        print("=" * 60 + "\n")
 
     return status
 
@@ -105,7 +107,8 @@ def merge_run(
     slack_notify: bool = False,
 ) -> dict[str, Any]:
     """
-    Merge local C2PA results with the agent JSON returned by Claude in Chrome.
+    Merge local C2PA results with manual findings from Gemini SynthID
+    and/or OpenAI Verify.
 
     Writes final.json to the run directory and returns the final verdict.
     """
