@@ -14,8 +14,8 @@
         "source": "github",
         "repo": "mikhaiwilson-prog/ai-verify"
       },
-      "category": "trust-and-safety",
-      "keywords": ["ai-detection", "c2pa", "synthid", "selfie"]
+      "category": "security",
+      "tags": ["ai-detection", "c2pa", "synthid", "selfie"]
     }
   ]
 }
