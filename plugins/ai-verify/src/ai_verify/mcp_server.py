@@ -40,24 +40,58 @@ def check_image(
     Run the local AI-image verification pipeline.
 
     PRIVACY GUARDRAILS:
-    - Face masking is mandatory. There is no flag to skip it.
     - The unmasked image is NEVER copied into the run directory.
     - The unmasked image path is NEVER surfaced in the return value.
-    - If face detection fails, no image artifact is produced (no masked copy,
-      no Downloads copy, no manual-check URLs). The analyst is told to verify
-      the image is a selfie.
+    - When face masking IS attempted (i.e., C2PA didn't confirm AI), it must
+      succeed before any image artifact is produced (no masked copy, no
+      Downloads copy, no manual-check URLs).
+    - There is no flag to skip masking when needed — the only way masking
+      is bypassed is when C2PA has already confirmed AI generation, in
+      which case no remote cross-check is needed and no image leaves the
+      machine.
 
-    On success returns: run_id, C2PA result, mask result, downloads_path,
-    manual_check_urls, and artifact paths for the MASKED image only.
+    Flow:
+    1. Read C2PA manifest (metadata only, no pixels exposed to caller).
+    2. If C2PA confirms AI → return verdict; skip masking entirely.
+    3. Otherwise → mask the face for the analyst's optional manual upload.
     """
     path = Path(image_path)
     run_id = _make_run_id()
     run_dir = _run_dir(run_id, out_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Face masking runs first. The pipeline refuses to produce any image
-    # artifact (masked copy, Downloads copy, upload-URL guidance) unless
-    # masking succeeds. The unmasked original is never copied or exposed.
+    # 1. C2PA first — pure metadata read, no pixels exposed to the LLM.
+    c2pa_result = check_c2pa(path)
+    c2pa_result["run_id"] = run_id
+    (run_dir / "c2pa.json").write_text(json.dumps(c2pa_result, indent=2))
+
+    artifacts: dict[str, Any] = {
+        "masked": None,
+        "c2pa_json": str(run_dir / "c2pa.json"),
+        "downloads_copy": None,
+        # NOTE: 'original' is intentionally NOT included — privacy guardrail.
+    }
+
+    # 2. If AI is confirmed, no remote cross-check is needed — skip masking.
+    if c2pa_result.get("has_ai_assertion"):
+        status: dict[str, Any] = {
+            "run_id": run_id,
+            "image": path.name,
+            "run_dir": str(run_dir),
+            "c2pa": c2pa_result,
+            "mask": None,
+            "mask_error": None,
+            "mask_skipped_reason": (
+                "AI confirmed by C2PA — manual cross-check not needed."
+            ),
+            "downloads_path": None,
+            "manual_check_urls": None,
+            "artifacts": artifacts,
+        }
+        (run_dir / "status.json").write_text(json.dumps(status, indent=2))
+        return status
+
+    # 3. Otherwise: face masking is mandatory before any analyst handoff.
     masked_path = run_dir / "masked.jpg"
     mask_result: dict[str, Any] | None = None
     mask_error: str | None = None
@@ -73,35 +107,37 @@ def check_image(
         downloads_copy = _DOWNLOADS_DIR / f"ai-verify-{run_id}.jpg"
         shutil.copy2(masked_path, downloads_copy)
 
-    # C2PA reads metadata only — does not surface pixel data to the LLM.
-    c2pa_result = check_c2pa(path)
-    c2pa_result["run_id"] = run_id
-    (run_dir / "c2pa.json").write_text(json.dumps(c2pa_result, indent=2))
+    artifacts["masked"] = str(masked_path) if mask_result else None
+    artifacts["downloads_copy"] = str(downloads_copy) if downloads_copy else None
 
-    status: dict[str, Any] = {
+    status = {
         "run_id": run_id,
         "image": path.name,
         "run_dir": str(run_dir),
         "c2pa": c2pa_result,
         "mask": mask_result,
         "mask_error": mask_error,
+        "mask_skipped_reason": None,
         "downloads_path": str(downloads_copy) if downloads_copy else None,
         # Manual-check URLs are only surfaced when there's a masked image
         # available — never direct the analyst to upload an unmasked image.
+        # Both services must be checked (each detects different providers).
         "manual_check_urls": (
             {
-                "gemini": "https://gemini.google.com",
                 "openai_verify": "https://openai.com/research/verify",
+                "gemini": "https://gemini.google.com",
             }
             if mask_result
             else None
         ),
-        "artifacts": {
-            "masked": str(masked_path) if mask_result else None,
-            "c2pa_json": str(run_dir / "c2pa.json"),
-            "downloads_copy": str(downloads_copy) if downloads_copy else None,
-            # NOTE: 'original' is intentionally NOT included — privacy guardrail.
-        },
+        "manual_check_guidance": (
+            "Check the masked image on BOTH services — each detects different "
+            "AI providers, so a single source is not enough. Absence of a "
+            "C2PA AI signal is NOT evidence the image is real."
+            if mask_result
+            else None
+        ),
+        "artifacts": artifacts,
     }
     (run_dir / "status.json").write_text(json.dumps(status, indent=2))
 

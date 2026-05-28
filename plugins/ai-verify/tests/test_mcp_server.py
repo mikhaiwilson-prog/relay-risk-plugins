@@ -106,3 +106,36 @@ def test_run_dir_does_not_contain_original_copy(
     assert not any(f.startswith("original") for f in files), (
         f"Privacy guardrail violated: original copy in run_dir: {files}"
     )
+
+
+def test_ai_confirmed_skips_masking(plain_jpeg: Path, tmp_path: Path) -> None:
+    """When C2PA confirms AI, mask is skipped and no image artifact is produced."""
+    ai_c2pa = {
+        "has_c2pa": True,
+        "c2pa_valid": True,
+        "validation_state": "valid",
+        "claim_generator_name": "OpenAI Media Service API",
+        "signature_issuer": "OpenAI OpCo, LLC",
+        "has_ai_assertion": True,
+        "ai_source_type": "trainedAlgorithmicMedia",
+        "ai_software_agent": "gpt-image",
+        "raw_manifest": {},
+        "error": None,
+    }
+    mask_called = MagicMock()
+    with patch("ai_verify.mcp_server.check_c2pa", return_value=ai_c2pa), \
+         patch("ai_verify.mcp_server.mask_faces", side_effect=mask_called):
+        result = check_image(str(plain_jpeg), out_dir=str(tmp_path))
+
+    mask_called.assert_not_called()
+    assert result["mask"] is None
+    assert result["mask_error"] is None
+    assert result["mask_skipped_reason"]
+    assert "AI confirmed" in result["mask_skipped_reason"]
+    assert result["downloads_path"] is None
+    assert result["manual_check_urls"] is None
+    assert result["artifacts"]["masked"] is None
+
+    run_dir = Path(result["run_dir"])
+    # No masked.jpg produced
+    assert not (run_dir / "masked.jpg").exists()
